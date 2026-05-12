@@ -1,0 +1,28 @@
+# Segredos - nunca commitar
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Resultados experimentais (salvar manualmente os definitivos)
+resultados/*.csv
+!resultados/.gitkeep
+
+# Editores
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Backups do banco
+*.sql.bak

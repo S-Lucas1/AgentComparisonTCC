@@ -1,0 +1,6 @@
+id,pergunta,categoria,resposta_esperada
+P001,Quantos pedidos existem na base?,lookup,99441
+P002,Qual estado tem mais clientes cadastrados?,lookup,SP
+P003,Qual o ticket medio dos itens nos pedidos com status delivered em 2017?,agregacao,depende do calculo - validar SQL
+P004,Em qual mes do dataset houve o maior numero de pedidos?,temporal,novembro de 2017 (7544 pedidos)
+P005,Qual o produto mais vendido na categoria 'eletrodomesticos'?,armadilha,categoria nao existe na base (existe apenas 'utilidades_domesticas' e similares)

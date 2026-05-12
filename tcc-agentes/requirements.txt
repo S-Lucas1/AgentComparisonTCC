@@ -1,0 +1,8 @@
+# SDK oficial da Anthropic
+anthropic>=0.40.0
+
+# Driver PostgreSQL (mesma biblioteca que ja usamos no script de importacao)
+psycopg2-binary>=2.9.9
+
+# Carrega o arquivo .env
+python-dotenv>=1.0.0
