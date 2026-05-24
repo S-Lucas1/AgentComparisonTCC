@@ -84,7 +84,11 @@ def responder(pergunta: str) -> dict:
         resposta_texto = ""
         tokens_in = 0
         tokens_out = 0
-        erro = str(e)
+        msg_erro = str(e)
+        if "<html" in msg_erro.lower() or "proxy" in msg_erro.lower():
+            erro = "PROXY_BLOCK: API interceptada por proxy corporativo. Verifique a rede."
+        else:
+            erro = msg_erro
 
     return {
         "pergunta": pergunta,

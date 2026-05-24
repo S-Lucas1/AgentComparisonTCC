@@ -15,7 +15,9 @@ from pathlib import Path
 
 from src.prototipo_a_contexto import responder as responder_a
 from src.prototipo_b_mcp import responder as responder_b
-from src.logger import salvar_resultado
+from src.logger import salvar_resultado, iniciar_run
+
+_ROOT = Path(__file__).resolve().parent.parent
 
 
 def carregar_perguntas(caminho: str) -> list[dict]:
@@ -24,7 +26,10 @@ def carregar_perguntas(caminho: str) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def main(caminho_csv: str = "data/perguntas_exemplo.csv"):
+def main(caminho_csv: str | None = None):
+    if caminho_csv is None:
+        caminho_csv = str(_ROOT / "data" / "perguntas_exemplo.csv")
+    iniciar_run()
     perguntas = carregar_perguntas(caminho_csv)
     print(f"Carregadas {len(perguntas)} perguntas de {caminho_csv}\n")
 
@@ -44,21 +49,30 @@ def main(caminho_csv: str = "data/perguntas_exemplo.csv"):
                 r["id_pergunta"] = pid
                 salvar_resultado(r)
                 if r["erro"]:
-                    print(f"  {nome}: ERRO -> {r['erro']}")
+                    resumo_erro = str(r["erro"])[:120].encode(
+                        sys.stdout.encoding or "utf-8", errors="replace"
+                    ).decode(sys.stdout.encoding or "utf-8", errors="replace")
+                    print(f"  {nome}: ERRO -> {resumo_erro}")
                 else:
-                    print(
-                        f"  {nome}: OK ({r['latencia_s']}s, "
+                    meta = (
+                        f"{r['latencia_s']}s, "
                         f"{r['tokens_input']}+{r['tokens_output']} tok"
-                        + (f", {r['iteracoes']} chamadas)" if r["iteracoes"] > 1 else ")")
+                        + (f", {r['iteracoes']} iter" if r["iteracoes"] > 1 else "")
                     )
+                    resposta_curta = r["resposta"].replace("\n", " ")[:120]
+                    print(f"  {nome} ({meta}): {resposta_curta}")
             except Exception as e:
-                print(f"  {nome}: EXCECAO -> {e}")
+                resumo = str(e)[:120].encode(
+                    sys.stdout.encoding or "utf-8", errors="replace"
+                ).decode(sys.stdout.encoding or "utf-8", errors="replace")
+                print(f"  {nome}: EXCECAO -> {resumo}")
 
         print()
 
-    print(f"Concluido. Resultados em resultados/")
+    from src.logger import LOG_DIR
+    print(f"Concluido. Resultados em {LOG_DIR}")
 
 
 if __name__ == "__main__":
-    arquivo = sys.argv[1] if len(sys.argv) > 1 else "data/perguntas_exemplo.csv"
+    arquivo = sys.argv[1] if len(sys.argv) > 1 else None
     main(arquivo)

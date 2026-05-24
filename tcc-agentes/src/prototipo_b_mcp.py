@@ -1,49 +1,74 @@
 """
-PROTOTIPO B - LLM COM ACESSO AO BANCO VIA FERRAMENTA SQL
-=========================================================
+PROTOTIPO B - LLM COM ACESSO AO BANCO VIA MCP REAL
+====================================================
 
-A LLM recebe uma ferramenta `executar_sql` e usa em loop para
-consultar dados reais antes de responder.
+A LLM tem acesso ao banco PostgreSQL via MCP (Model Context Protocol).
+O protocolo JSON-RPC sobre stdio conecta um cliente Python (este arquivo)
+a um servidor Node.js (@modelcontextprotocol/server-postgres) que expoe
+a ferramenta `query` para executar SELECTs no banco.
 
-NOTA SOBRE MCP:
-O TCC compara 'contexto puro' vs 'MCP'. Esta implementacao usa
-TOOL USE direto da API Anthropic, que e o mecanismo subjacente
-ao MCP. Para fidelidade total ao TCC, a etapa final do experimento
-devera migrar para o servidor MCP oficial da Anthropic
-(github.com/modelcontextprotocol/servers/tree/main/src/postgres),
-mas a logica de loop ReAct e identica - so muda o protocolo de transporte
-das ferramentas. Esta e uma decisao a documentar no Capitulo 3.
+Fluxo:
+  1. Inicia o servidor MCP como subprocesso via npx.
+  2. Conecta o cliente MCP Python via stdio (JSON-RPC).
+  3. Lista as tools do servidor MCP e as converte para o formato Anthropic.
+  4. Executa loop ReAct (max 8 iteracoes): quando o LLM faz tool_use,
+     chama session.call_tool() via MCP em vez de executar SQL localmente.
+  5. Retorna dict com os mesmos 12 campos do logger (interface identica ao
+     Prototipo A, garantindo compatibilidade com o runner).
 """
+import asyncio
+import logging
+import os
+import sys
 import time
-from anthropic import Anthropic
 
-from src.config import ANTHROPIC_API_KEY, MODELO_PADRAO
-from src.db import executar_sql, obter_schema_resumido
+import anthropic
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
+from src.config import ANTHROPIC_API_KEY, DB_CONFIG, MODELO_PADRAO
+from src.db import obter_schema_resumido
 
-_cliente = Anthropic(api_key=ANTHROPIC_API_KEY)
+logger = logging.getLogger(__name__)
+
+_cliente = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 _schema_cache: str | None = None
 
 
-# === Definicao da ferramenta exposta ao LLM ===
-FERRAMENTA_SQL = {
-    "name": "executar_sql",
-    "description": (
-        "Executa uma query SQL (SELECT) no banco PostgreSQL Olist e retorna o resultado. "
-        "Use sempre que precisar de dados reais para responder. "
-        "NAO use para INSERT, UPDATE ou DELETE - apenas leitura."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "sql": {
-                "type": "string",
-                "description": "Query SQL a executar. Apenas SELECT.",
-            }
-        },
-        "required": ["sql"],
-    },
-}
+def _db_url() -> str:
+    c = DB_CONFIG
+    return (
+        f"postgresql://{c['user']}:{c['password']}"
+        f"@{c['host']}:{c['port']}/{c['dbname']}"
+    )
+
+
+def _mcp_server_params() -> StdioServerParameters:
+    """
+    Monta os parametros para iniciar o servidor MCP postgres como subprocesso.
+    Adiciona o diretorio do Node.js ao PATH para garantir que npx funcione
+    mesmo quando o terminal nao atualizou o PATH apos a instalacao.
+    """
+    env = dict(os.environ)
+    nodejs_candidates = [
+        r"C:\Program Files\nodejs",
+        r"C:\Program Files (x86)\nodejs",
+    ]
+    for p in nodejs_candidates:
+        if os.path.isdir(p) and p not in env.get("PATH", ""):
+            env["PATH"] = p + os.pathsep + env.get("PATH", "")
+
+    db_url = _db_url()
+
+    if sys.platform == "win32":
+        # No Windows, .cmd precisa de cmd.exe /c para ser executado
+        command = "cmd.exe"
+        args = ["/c", "npx", "-y", "@modelcontextprotocol/server-postgres", db_url]
+    else:
+        command = "npx"
+        args = ["-y", "@modelcontextprotocol/server-postgres", db_url]
+
+    return StdioServerParameters(command=command, args=args, env=env)
 
 
 def _system_prompt() -> str:
@@ -54,15 +79,15 @@ def _system_prompt() -> str:
     return f"""Voce e um analista de dados respondendo perguntas sobre uma base \
 de e-commerce brasileira (Olist).
 
-VOCE TEM ACESSO AO BANCO via a ferramenta `executar_sql`.
+VOCE TEM ACESSO AO BANCO via a ferramenta `query`.
 
 REGRAS IMPORTANTES:
-1. SEMPRE busque dados reais via `executar_sql` antes de responder.
+1. SEMPRE busque dados reais via `query` antes de responder.
 2. Se a pergunta nao puder ser respondida com os dados (ex: dado fora da
    base ou que nao existe), diga claramente: "Nao ha dados suficientes
    na base para responder."
 3. Pode fazer multiplas consultas se necessario.
-4. NAO use INSERT, UPDATE ou DELETE.
+4. NAO use INSERT, UPDATE ou DELETE - a ferramenta e read-only.
 5. Ao responder, mostre o numero exato encontrado e mencione brevemente
    como chegou nele.
 
@@ -71,33 +96,23 @@ SCHEMA DO BANCO:
 """
 
 
-def _executar_chamada_de_ferramenta(bloco) -> str:
-    """Executa o SQL pedido pela LLM e devolve resultado como texto."""
-    sql = bloco.input.get("sql", "")
-    try:
-        rows, cols = executar_sql(sql)
-        # Limita o tamanho do resultado para nao explodir o contexto
-        max_linhas = 50
-        if len(rows) > max_linhas:
-            preview = rows[:max_linhas]
-            texto = (
-                f"Colunas: {cols}\n"
-                f"Linhas (mostrando {max_linhas} de {len(rows)}): {preview}"
-            )
-        else:
-            texto = f"Colunas: {cols}\nLinhas ({len(rows)}): {rows}"
-        return texto
-    except Exception as e:
-        return f"ERRO_SQL: {e}"
+def _tools_para_anthropic(tools) -> list[dict]:
+    """Converte lista de tools MCP para o formato esperado pela API Anthropic."""
+    result = []
+    for t in tools:
+        schema = t.inputSchema
+        if not isinstance(schema, dict):
+            schema = schema.model_dump()
+        result.append({
+            "name": t.name,
+            "description": t.description or "",
+            "input_schema": schema,
+        })
+    return result
 
 
-def responder(pergunta: str, max_iteracoes: int = 8) -> dict:
-    """
-    Loop ReAct: o modelo pode chamar `executar_sql` varias vezes
-    antes de produzir a resposta final.
-    """
+async def _responder_async(pergunta: str, max_iteracoes: int = 8) -> dict:
     inicio = time.time()
-    mensagens = [{"role": "user", "content": pergunta}]
     sqls_executados: list[str] = []
     tokens_in_total = 0
     tokens_out_total = 0
@@ -105,54 +120,76 @@ def responder(pergunta: str, max_iteracoes: int = 8) -> dict:
     resposta_final = ""
 
     try:
-        for _ in range(max_iteracoes):
-            resp = _cliente.messages.create(
-                model=MODELO_PADRAO,
-                max_tokens=2048,
-                system=_system_prompt(),
-                tools=[FERRAMENTA_SQL],
-                messages=mensagens,
-            )
-            tokens_in_total += resp.usage.input_tokens
-            tokens_out_total += resp.usage.output_tokens
+        params = _mcp_server_params()
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                logger.info("MCP server iniciado")
 
-            # Caso 1: o modelo terminou e produziu resposta final
-            if resp.stop_reason == "end_turn":
-                resposta_final = "".join(
-                    b.text for b in resp.content if hasattr(b, "text")
-                )
-                break
+                tools_mcp = (await session.list_tools()).tools
+                tools_anthropic = _tools_para_anthropic(tools_mcp)
 
-            # Caso 2: o modelo quer chamar uma ferramenta
-            if resp.stop_reason == "tool_use":
-                # Anexa a mensagem do assistente (com o pedido de ferramenta)
-                mensagens.append({"role": "assistant", "content": resp.content})
+                mensagens = [{"role": "user", "content": pergunta}]
 
-                # Para cada bloco tool_use, executa e devolve o resultado
-                resultados_de_ferramenta = []
-                for bloco in resp.content:
-                    if bloco.type == "tool_use":
-                        sql_pedido = bloco.input.get("sql", "")
-                        sqls_executados.append(sql_pedido)
-                        texto_resultado = _executar_chamada_de_ferramenta(bloco)
-                        resultados_de_ferramenta.append({
-                            "type": "tool_result",
-                            "tool_use_id": bloco.id,
-                            "content": texto_resultado,
-                        })
+                for _ in range(max_iteracoes):
+                    resp = _cliente.messages.create(
+                        model=MODELO_PADRAO,
+                        max_tokens=2048,
+                        system=_system_prompt(),
+                        tools=tools_anthropic,
+                        messages=mensagens,
+                    )
+                    tokens_in_total += resp.usage.input_tokens
+                    tokens_out_total += resp.usage.output_tokens
 
-                mensagens.append({"role": "user", "content": resultados_de_ferramenta})
-                continue
+                    if resp.stop_reason == "end_turn":
+                        resposta_final = "".join(
+                            b.text for b in resp.content if hasattr(b, "text")
+                        )
+                        break
 
-            # Caso 3: outro stop_reason inesperado - aborta
-            erro = f"stop_reason inesperado: {resp.stop_reason}"
-            break
-        else:
-            # Loop terminou sem 'end_turn' = excedeu max_iteracoes
-            erro = f"excedeu max_iteracoes ({max_iteracoes})"
+                    if resp.stop_reason == "tool_use":
+                        mensagens.append({"role": "assistant", "content": resp.content})
+
+                        resultados = []
+                        for bloco in resp.content:
+                            if bloco.type == "tool_use":
+                                sql = bloco.input.get("sql", "")
+                                sqls_executados.append(sql)
+                                logger.info(f"MCP tool_call: {bloco.name}")
+
+                                try:
+                                    resultado_mcp = await session.call_tool(
+                                        bloco.name, bloco.input
+                                    )
+                                    conteudo = "\n".join(
+                                        c.text
+                                        for c in resultado_mcp.content
+                                        if hasattr(c, "text")
+                                    )
+                                except Exception as e:
+                                    conteudo = f"ERRO_MCP: {e}"
+
+                                resultados.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": bloco.id,
+                                    "content": conteudo,
+                                })
+
+                        mensagens.append({"role": "user", "content": resultados})
+                        continue
+
+                    erro = f"stop_reason inesperado: {resp.stop_reason}"
+                    break
+                else:
+                    erro = f"excedeu max_iteracoes ({max_iteracoes})"
 
     except Exception as e:
-        erro = str(e)
+        msg_erro = str(e)
+        if "<html" in msg_erro.lower() or "proxy" in msg_erro.lower():
+            erro = "PROXY_BLOCK: API interceptada por proxy corporativo. Verifique a rede."
+        else:
+            erro = msg_erro
 
     return {
         "pergunta": pergunta,
@@ -168,9 +205,19 @@ def responder(pergunta: str, max_iteracoes: int = 8) -> dict:
     }
 
 
+def responder(pergunta: str, max_iteracoes: int = 8) -> dict:
+    """
+    Envia a pergunta ao LLM que usa MCP para consultar o PostgreSQL.
+    Interface sync; internamente usa asyncio.run() para envolver o codigo async.
+    """
+    return asyncio.run(_responder_async(pergunta, max_iteracoes))
+
+
 # Permite rodar este arquivo diretamente para teste:
 #   python -m src.prototipo_b_mcp
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
     print(f"Modelo: {MODELO_PADRAO}\n")
     pergunta = "Quantos pedidos existem na base e qual o range de datas?"
     print(f"Pergunta: {pergunta}\n")

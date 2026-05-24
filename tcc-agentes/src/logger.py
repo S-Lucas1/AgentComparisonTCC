@@ -5,10 +5,11 @@ Cada execucao de uma pergunta gera uma linha num CSV em resultados/.
 Um CSV por dia para facilitar revisao posterior.
 """
 import csv
+import re
 from datetime import datetime
 from pathlib import Path
 
-LOG_DIR = Path("resultados")
+LOG_DIR = Path(__file__).resolve().parent.parent / "resultados"
 LOG_DIR.mkdir(exist_ok=True)
 
 CAMPOS = [
@@ -27,9 +28,26 @@ CAMPOS = [
 ]
 
 
+_run_ts: str | None = None
+
+
+def iniciar_run() -> None:
+    """Fixa o timestamp da run. Chamar uma vez antes de salvar resultados."""
+    global _run_ts
+    _run_ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
+
+
 def arquivo_de_log() -> Path:
-    """Um CSV por dia. Facil de revisar e nao mistura experimentos."""
-    return LOG_DIR / f"resultados_{datetime.now().strftime('%Y-%m-%d')}.csv"
+    """Um arquivo por run. Se iniciar_run() nao foi chamado, usa o momento atual."""
+    ts = _run_ts or datetime.now().strftime("%Y-%m-%d_%H-%M")
+    return LOG_DIR / f"resultados_{ts}.csv"
+
+
+def _limpar_erro(msg: str) -> str:
+    """Remove newlines, colapsa espaços e trunca a 300 chars."""
+    sem_tags = re.sub(r"<[^>]+>", "", msg)      # strip HTML tags se houver
+    colapsado = re.sub(r"\s+", " ", sem_tags).strip()
+    return colapsado[:300]
 
 
 def salvar_resultado(r: dict) -> None:
@@ -51,11 +69,14 @@ def salvar_resultado(r: dict) -> None:
         "tokens_output": r.get("tokens_output", 0),
         "latencia_s": r.get("latencia_s", 0),
         "iteracoes": r.get("iteracoes", 1),
-        "sqls_executados": " | ".join(r.get("sqls_executados", []) or []),
-        "erro": r.get("erro", ""),
+        "sqls_executados": " | ".join(
+            re.sub(r"\s+", " ", sql).strip()
+            for sql in (r.get("sqls_executados", []) or [])
+        ),
+        "erro": _limpar_erro(str(r.get("erro", ""))),
     }
 
-    with open(arq, "a", encoding="utf-8", newline="") as f:
+    with open(arq, "a", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CAMPOS)
         if eh_arquivo_novo:
             writer.writeheader()

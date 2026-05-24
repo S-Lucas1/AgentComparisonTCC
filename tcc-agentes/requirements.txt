@@ -6,3 +6,6 @@ psycopg2-binary>=2.9.9
 
 # Carrega o arquivo .env
 python-dotenv>=1.0.0
+
+# SDK Python do MCP (Model Context Protocol) - cliente para o servidor postgres
+mcp>=1.0.0
