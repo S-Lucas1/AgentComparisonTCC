@@ -28,7 +28,7 @@ def carregar_perguntas(caminho: str) -> list[dict]:
 
 def main(caminho_csv: str | None = None):
     if caminho_csv is None:
-        caminho_csv = str(_ROOT / "data" / "perguntas_exemplo.csv")
+        caminho_csv = str(_ROOT / "data" / "perguntas_50_oficiais_final.csv")
     iniciar_run()
     perguntas = carregar_perguntas(caminho_csv)
     print(f"Carregadas {len(perguntas)} perguntas de {caminho_csv}\n")
