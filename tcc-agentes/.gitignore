@@ -26,3 +26,8 @@ Thumbs.db
 
 # Backups do banco
 *.sql.bak
+
+# Arquivos grandes do dataset (excedem limite do GitHub)
+Dataset/olist_backup.sql
+Dataset/archive.zip
+Dataset/olist_data/olist_geolocation_dataset.csv
