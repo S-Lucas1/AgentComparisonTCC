@@ -60,13 +60,19 @@ def _mcp_server_params() -> StdioServerParameters:
 
     db_url = _db_url()
 
+    # --prefer-offline: usa o pacote em cache e PULA a checagem de versao no
+    # registry npm. Sem isso, cada spawn faz uma chamada de rede que pode
+    # pendurar por dezenas de segundos (gargalo principal do Prototipo B).
+    # Cai para a rede normalmente se o pacote ainda nao estiver em cache.
     if sys.platform == "win32":
         # No Windows, .cmd precisa de cmd.exe /c para ser executado
         command = "cmd.exe"
-        args = ["/c", "npx", "-y", "@modelcontextprotocol/server-postgres", db_url]
+        args = ["/c", "npx", "--prefer-offline", "-y",
+                "@modelcontextprotocol/server-postgres", db_url]
     else:
         command = "npx"
-        args = ["-y", "@modelcontextprotocol/server-postgres", db_url]
+        args = ["--prefer-offline", "-y",
+                "@modelcontextprotocol/server-postgres", db_url]
 
     return StdioServerParameters(command=command, args=args, env=env)
 

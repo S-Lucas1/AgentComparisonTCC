@@ -98,7 +98,7 @@ def responder(pergunta: str) -> dict:
         "latencia_s": round(time.time() - inicio, 2),
         "modelo": MODELO_PADRAO,
         "abordagem": "contexto",
-        "iteracoes": 1,
+        "iteracoes": 0,  # Prototipo A nao faz tool calls
         "sqls_executados": [],
         "erro": erro,
     }

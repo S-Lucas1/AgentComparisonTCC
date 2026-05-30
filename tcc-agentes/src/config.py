@@ -30,4 +30,4 @@ DB_CONFIG = {
 # === Modelo LLM padrao ===
 # Trocar aqui para rodar com modelo diferente.
 # Lista oficial: https://docs.claude.com/en/docs/about-claude/models
-MODELO_PADRAO = os.getenv("MODELO_PADRAO", "claude-haiku-4-5")
+MODELO_PADRAO = os.getenv("MODELO_PADRAO", "claude-sonnet-4-6")
